@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shooting Game</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: black; }
+        canvas { display: block; background: #222; }
+        .instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-family: Arial, sans-serif;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="instructions">
+        WASD/Arrow keys to move<br>
+        Left click to shoot<br>
+        Scroll up/down to zoom
+    </div>
+    <canvas id="gameCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        let scale = 1.0;
+        let zoomSpeed = 0.1;
+        
+
+        const player = {
+            x: canvas.width / 4,
+            y: canvas.height / 2,
+            width: 20,
+            height: 20,
+            speed: 2
+        };
+
+        const block = {
+            x: canvas.width / 2 - 50,
+            y: canvas.height / 2 - 50,
+            width: 100,
+            height: 100,
+            chunks: []
+        };
+        
+        for (let i = 0; i < 100; i++) {
+            block.chunks.push({
+                x: block.x + (i % 10) * 10,
+                y: block.y + Math.floor(i / 10) * 10,
+                hit: false
+            });
+        }
+
+        let bullets = [];
+        let keys = {};
+        let mouseAngle = 0;
+        let blastRadius = 20; // Adjustable blast radius
+
+        window.addEventListener("keydown", (e) => keys[e.key.toLowerCase()] = true);
+        window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
+        
+        window.addEventListener("mousemove", (e) => {
+            let dx = e.clientX - player.x;
+            let dy = e.clientY - player.y;
+            mouseAngle = Math.atan2(dy, dx);
+        });
+        
+        window.addEventListener("click", () => {
+            bullets.push({ 
+                x: player.x + player.width / 2, 
+                y: player.y + player.height / 2, 
+                speed: 6,
+                angle: mouseAngle,
+                myBullet: true
+            });
+            let update = JSON.stringify({ type: "playerShoots", id: playerId, x: player.x, y: player.y, angle: mouseAngle });
+            ws.send(update);
+            console.log("Sent:", update); // Debugging: Log sent data
+            lastUpdateTime = now;
+        });
+
+        window.addEventListener("wheel", (e) => {
+            if (e.deltaY < 0) {
+                scale += zoomSpeed;
+            } else {
+                scale -= zoomSpeed;
+            }
+            scale = Math.max(0.5, Math.min(2, scale)); // Limit zoom levels
+        });
+        
+        const ws = new WebSocket("ws://localhost:8080"); // Connect to signaling server
+        let peers = {}; // Store connected peers
+
+        ws.onmessage = (event) => {
+            let data = JSON.parse(event.data);
+
+            // if (data.type === "playerUpdate") {
+            //     peers[data.id] = { x: data.x, y: data.y };
+            // }
+            switch(data.type){
+                case "playerUpdate":
+                    peers[data.id] = { x: data.x, y: data.y };
+                    break;
+
+                case "playerDisconnected": 
+                    break;
+
+                case "playerShoots": 
+                // Received message about another player shooting
+                    bullets.push({ 
+                        x: data.x + player.width / 2, 
+                        y: data.y + player.height / 2, 
+                        speed: 6,
+                        angle: data.mouseAngle,
+                        myBullet: false
+                    });
+                    break;
+            }
+        };
+
+        let lastUpdateTime = 0;
+
+        function sendPlayerUpdate() {
+
+            if (!playerId) {
+                console.warn("⚠️ playerId is undefined, skipping update...");
+                return;
+            }
+            const now = Date.now();
+            if (now - lastUpdateTime > 100) { // Only send every 100ms
+                let update = JSON.stringify({ type: "playerUpdate", id: playerId, x: player.x, y: player.y });
+                ws.send(update);
+                console.log("Sent:", update); // Debugging: Log sent data
+                lastUpdateTime = now;
+            }
+        }
+
+
+        let lastSentX = player.x;
+        let lastSentY = player.y;
+
+        function update() {
+            
+            let moved = false;
+
+           
+            if (keys["w"] || keys["arrowup"]) { player.y -= player.speed; moved = true; }
+            if (keys["s"] || keys["arrowdown"]) { player.y += player.speed; moved = true; }
+            if (keys["a"] || keys["arrowleft"]) { player.x -= player.speed; moved = true; }
+            if (keys["d"] || keys["arrowright"]) { player.x += player.speed; moved = true; }
+            // Send update if player moved
+            if (moved && (player.x !== lastSentX || player.y !== lastSentY)) {
+                sendPlayerUpdate(); // Now sends updates on movement
+                lastSentX = player.x;
+                lastSentY = player.y;
+            }
+
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                let bullet = bullets[i];
+                sendPlayerUpdate(); // Send player position updates
+                bullet.x += Math.cos(bullet.angle) * bullet.speed;
+                bullet.y += Math.sin(bullet.angle) * bullet.speed;
+                
+                for (let j = block.chunks.length - 1; j >= 0; j--) {
+                    let chunk = block.chunks[j];
+                    let dx = chunk.x + 5 - bullet.x;
+                    let dy = chunk.y + 5 - bullet.y;
+                    let distance = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (!chunk.hit && distance <= 5) { // Direct hit
+                        for (let k = block.chunks.length - 1; k >= 0; k--) {
+                            let blastChunk = block.chunks[k];
+                            let blastDx = blastChunk.x + 15 - bullet.x;
+                            let blastDy = blastChunk.y + 15 - bullet.y;
+                            let blastDistance = Math.sqrt(blastDx * blastDx + blastDy * blastDy);
+                            
+                            if (blastDistance <= blastRadius) {
+                                blastChunk.hit = true;
+                            }
+                        }
+                        bullets.splice(i, 1);
+                        break;
+                    }
+                }
+                
+                if (bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+                    bullets.splice(i, 1);
+                }
+            }
+        }
+
+        function draw() {
+            ctx.setTransform(scale, 0, 0, scale, canvas.width / 2 * (1 - scale), canvas.height / 2 * (1 - scale));
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "white";
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+
+            ctx.fillStyle = "green"; // Other players
+            Object.values(peers).forEach(p => {
+                ctx.fillRect(p.x, p.y, player.width, player.height);
+            });
+
+            ctx.fillStyle = "red";
+            bullets.forEach(bullet => {
+                if(bullet.myBullet === true){
+                    ctx.fillRect(bullet.x, bullet.y, 5, 5)
+                } else {
+                    ctx.fillStyle = "purple";
+                    ctx.fillRect(bullet.x, bullet.y, 5, 5)
+                }
+            });
+
+            ctx.fillStyle = "blue";
+            block.chunks.forEach(chunk => {
+                if (!chunk.hit) ctx.fillRect(chunk.x, chunk.y, 10, 10);
+            });
+
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        let playerId = null;
+
+        window.onload = () => {
+            playerId = Math.random().toString(36).substr(2, 9); // Generate unique ID
+            console.log("✅ playerId initialized:", playerId);
+            
+            // Start game loop once playerId is set
+            gameLoop();
+        };
+
+    </script>
+</body>
+</html>
